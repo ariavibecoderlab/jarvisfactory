@@ -1,11 +1,23 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { createClient } from '@/utils/supabase/client'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 
-export default function Builder() {
+export default function BuilderPage() {
+  return (
+    <Suspense fallback={<div style={{minHeight:'100vh',background:'#05050d',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Space Mono',monospace",color:'#00e5b0',fontSize:14}}>Loading JARVIS...</div>}>
+      <Builder />
+    </Suspense>
+  )
+}
+
+function Builder() {
   const [user, setUser] = useState<any>(null)
   const [jarvis, setJarvis] = useState<any>(null)
+  // ── v5: App persistence ──
+  const [myApps, setMyApps] = useState<any[]>([])
+  const [currentAppId, setCurrentAppId] = useState<string|null>(null)
+  const [showAppsPicker, setShowAppsPicker] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [phase, setPhase] = useState<'idle'|'planning'|'questioning'|'approving'|'building'|'iterating'|'done'>('idle')
   const [builtCode, setBuiltCode] = useState('')
@@ -19,7 +31,7 @@ export default function Builder() {
   const [jarvisMsg, setJarvisMsg] = useState('')
   const [chatLog, setChatLog] = useState<{html:string,isUser:boolean}[]>([])
   const [logs, setLogs] = useState<{t:string,msg:string,type:string}[]>([
-    {t:'00:00:00',msg:'JARVISFACTORY v2.0 — Sprint 1+2: Feedback chat + file attachments',type:'info'},
+    {t:'00:00:00',msg:'JARVISFACTORY v5 — App persistence + My Apps picker',type:'info'},
     {t:'00:00:00',msg:'Claude Sonnet 4.6 backend ready.',type:'ok'}
   ])
   // Sprint 1: feedback chat
@@ -44,6 +56,7 @@ export default function Builder() {
   const termRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = createClient()
 
   useEffect(() => {
@@ -54,13 +67,44 @@ export default function Builder() {
       const { data: j } = await supabase.from('jarvis_profiles').select('*').eq('user_id', user.id).single()
       setJarvis(j)
       setBrandName(j?.full_name || '')
-      setJarvisMsg(`Good day. I'm <strong style="color:#00e5b0">${j?.jarvis_name||'JARVIS'}</strong> — your personal AI developer.<br><br>
+
+      // ── v5: Load all user's apps ──
+      const { data: appList } = await supabase.from('apps').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+      setMyApps(appList || [])
+
+      // ── v5: Auto-restore — either ?app=<id> from URL, or most recent ──
+      const requestedId = searchParams.get('app')
+      const restoreId = requestedId || localStorage.getItem('jf_last_app_id')
+      let appToRestore = null
+      if(restoreId && appList?.length) {
+        appToRestore = appList.find(a => a.id === restoreId) || appList[0]
+      } else if(appList?.length) {
+        appToRestore = appList[0]
+      }
+
+      if(appToRestore) {
+        setCurrentAppId(appToRestore.id)
+        setBuiltCode(appToRestore.html_code || '')
+        setFinalPlan({ app_name: appToRestore.name, summary: appToRestore.description })
+        setPrompt(appToRestore.description || '')
+        setTokens(String(appToRestore.tokens_used||'—'))
+        setBuildTime(appToRestore.build_time || '—')
+        setPhase('done')
+        setActiveTab('preview')
+        localStorage.setItem('jf_last_app_id', appToRestore.id)
+        addLog(`Restored: ${appToRestore.name}`, 'ok')
+        setJarvisMsg(`Welcome back. I've restored <strong style="color:#00e5b0">${appToRestore.name}</strong>.<br><br>
+You can keep editing it via chat below, or start a new app with the "<strong>+ New App</strong>" button.<br><br>
+<strong style="color:#ffd166">${appList!.length} app${appList!.length===1?'':'s'}</strong> in your library.`)
+      } else {
+        setJarvisMsg(`Good day. I'm <strong style="color:#00e5b0">${j?.jarvis_name||'JARVIS'}</strong> — your personal AI developer.<br><br>
 I specialise in <strong>${j?.industry||'your industry'}</strong> apps.<br><br>
 <strong style="color:#ffd166">New in v2.0:</strong><br>
 📎 Attach images, PDFs, or docs as design references<br>
 💬 Chat with me after I build to improve anything<br>
 🎨 Set your brand colour for consistent design<br><br>
 Tell me what you want to build, or attach a reference first.`)
+      }
     }
     load()
   }, [])
@@ -78,6 +122,42 @@ Tell me what you want to build, or attach a reference first.`)
   function addChat(html:string,isUser=false) { setChatLog(l=>[...l,{html,isUser}]) }
 
   function getKey() { return localStorage.getItem('jf_anthropic_key')||'' }
+
+  // ── v5: App switching ──
+  function switchToApp(app: any) {
+    setCurrentAppId(app.id)
+    setBuiltCode(app.html_code || '')
+    setFinalPlan({ app_name: app.name, summary: app.description })
+    setPrompt(app.description || '')
+    setTokens(String(app.tokens_used||'—'))
+    setBuildTime(app.build_time || '—')
+    setPhase('done')
+    setActiveTab('preview')
+    setChatLog([])
+    setShowAppsPicker(false)
+    localStorage.setItem('jf_last_app_id', app.id)
+    addLog(`Switched to: ${app.name}`, 'ok')
+    addChat(`📂 Loaded <strong style="color:#00e5b0">${app.name}</strong>. Edit via chat below.`)
+  }
+
+  function newApp() {
+    setCurrentAppId(null)
+    setBuiltCode('')
+    setFinalPlan(null)
+    setPendingPlan(null)
+    setQuestions([])
+    setQAnswers({})
+    setPrompt('')
+    setTokens('—')
+    setBuildTime('—')
+    setPhase('idle')
+    setActiveTab('code')
+    setChatLog([])
+    setQaReport(null)
+    setShowAppsPicker(false)
+    localStorage.removeItem('jf_last_app_id')
+    addLog('New app — describe what to build', 'info')
+  }
 
   // ── SPRINT 2: File handler ──
   async function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>) {
@@ -275,13 +355,26 @@ ${fixPlanText}`
       } : m))
 
       if(user) {
-        await supabase.from('apps').insert({
-          user_id: user.id,
-          name: (finalPlan?.app_name || 'My App') + ' (fixed)',
-          description: `Fixed: ${pendingFeedback.substring(0,100)}`,
-          html_code: code, tokens_used: tok, build_time: '0',
-          created_at: new Date().toISOString()
-        })
+        if(currentAppId) {
+          // Update existing app
+          await supabase.from('apps').update({
+            html_code: code, tokens_used: tok,
+            description: `${finalPlan?.summary || ''} | Fixed: ${pendingFeedback.substring(0,80)}`
+          }).eq('id', currentAppId)
+        } else {
+          const { data: newRow } = await supabase.from('apps').insert({
+            user_id: user.id,
+            name: (finalPlan?.app_name || 'My App') + ' (fixed)',
+            description: `Fixed: ${pendingFeedback.substring(0,100)}`,
+            html_code: code, tokens_used: tok, build_time: '0',
+            created_at: new Date().toISOString()
+          }).select().single()
+          if(newRow) {
+            setCurrentAppId(newRow.id)
+            localStorage.setItem('jf_last_app_id', newRow.id)
+            setMyApps(prev => [newRow, ...prev])
+          }
+        }
       }
       setActiveTab('preview')
 
@@ -461,13 +554,19 @@ RULES:
       addLog('Tip: Type feedback in the chat below to improve anything!', 'ok')
       addChat(`🚀 <strong>Build complete!</strong> <strong style="color:#00e5b0">${tok.toLocaleString()} tokens</strong> · <strong style="color:#ffd166">${((Date.now()-startRef.current)/1000).toFixed(1)}s</strong><br><br>Switch to <strong>⬡ Preview</strong> to test it.<br><br><span style="color:#8b7cf8;font-size:11px">💬 Type feedback below to improve anything — I'm still here!</span>`)
       if(user) {
-        await supabase.from('apps').insert({
+        const buildTimeStr = ((Date.now()-startRef.current)/1000).toFixed(1)
+        const { data: newRow } = await supabase.from('apps').insert({
           user_id: user.id, name: finalPlan.app_name||'My App',
           description: finalPlan.summary||prompt.substring(0,200),
           html_code: code, tokens_used: tok,
-          build_time: ((Date.now()-startRef.current)/1000).toFixed(1),
+          build_time: buildTimeStr,
           created_at: new Date().toISOString()
-        })
+        }).select().single()
+        if(newRow) {
+          setCurrentAppId(newRow.id)
+          localStorage.setItem('jf_last_app_id', newRow.id)
+          setMyApps(prev => [newRow, ...prev])
+        }
       }
       setTimeout(() => setActiveTab('preview'), 800)
     } catch(err: any) {
@@ -532,11 +631,32 @@ RULES:
       <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.csv" onChange={handleFileAttach} style={{display:'none'}}/>
 
       <nav style={c.nav}>
-        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v2.0</span></div>
-        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5</span></div>
+        <div style={{display:'flex',gap:10,alignItems:'center',position:'relative' as const}}>
+          {currentAppId && finalPlan?.app_name && (
+            <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#00e5b0',padding:'4px 8px',background:'rgba(0,229,176,0.08)',border:'1px solid rgba(0,229,176,0.2)',borderRadius:6,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>📂 {finalPlan.app_name}</span>
+          )}
+          <button onClick={()=>setShowAppsPicker(!showAppsPicker)} style={{padding:'4px 10px',background:showAppsPicker?'rgba(139,124,248,0.15)':'transparent',border:'1px solid #1a1a35',borderRadius:6,color:'#8b7cf8',fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>📁 My Apps ({myApps.length})</button>
+          <button onClick={newApp} style={{padding:'4px 10px',background:'transparent',border:'1px solid rgba(0,229,176,0.3)',borderRadius:6,color:'#00e5b0',fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>+ New App</button>
           <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#8888aa'}}>{jarvis?.jarvis_name||'JARVIS'}</span>
           <button onClick={()=>setShowBrandPanel(!showBrandPanel)} style={{padding:'4px 10px',background:showBrandPanel?'rgba(0,229,176,0.1)':'transparent',border:'1px solid #1a1a35',borderRadius:6,color:'#8888aa',fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>🎨 Brand</button>
           <button style={{padding:'4px 10px',background:'transparent',border:'1px solid #1a1a35',borderRadius:6,color:'#8888aa',fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}} onClick={()=>router.push('/dashboard')}>← Dashboard</button>
+
+          {/* My Apps dropdown */}
+          {showAppsPicker && (
+            <div style={{position:'absolute' as const,top:'calc(100% + 8px)',right:0,width:340,maxHeight:480,overflowY:'auto' as const,background:'#0d0d1e',border:'1px solid #1a1a35',borderRadius:10,boxShadow:'0 8px 24px rgba(0,0,0,0.5)',zIndex:100,padding:8}}>
+              <div style={{padding:'8px 10px',fontFamily:"'Space Mono',monospace",fontSize:10,color:'#5a5a78',textTransform:'uppercase' as const,letterSpacing:1,borderBottom:'1px solid #1a1a35',marginBottom:6}}>Your Apps ({myApps.length})</div>
+              {myApps.length === 0 ? (
+                <div style={{padding:'24px 10px',textAlign:'center' as const,fontSize:11,color:'#5a5a78'}}>No apps yet. Build your first one!</div>
+              ) : myApps.map(app => (
+                <div key={app.id} onClick={()=>switchToApp(app)} style={{padding:'10px 12px',marginBottom:4,background:currentAppId===app.id?'rgba(0,229,176,0.08)':'#161625',border:`1px solid ${currentAppId===app.id?'rgba(0,229,176,0.3)':'#1a1a35'}`,borderRadius:8,cursor:'pointer'}}>
+                  <div style={{fontSize:12,fontWeight:600,color:currentAppId===app.id?'#00e5b0':'#f0f0fa',marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>{currentAppId===app.id?'● ':''}{app.name}</div>
+                  <div style={{fontSize:10,color:'#8888aa',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,marginBottom:4}}>{app.description?.substring(0,60)}</div>
+                  <div style={{fontSize:9,color:'#5a5a78',fontFamily:"'Space Mono',monospace"}}>{new Date(app.created_at).toLocaleDateString()} · {app.tokens_used||0} tokens</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </nav>
 
@@ -752,17 +872,31 @@ RULES:
               <button
                 onClick={async()=>{
                   if(!builtCode||!user) return
-                  await supabase.from('apps').insert({
-                    user_id:user.id,
-                    name:(finalPlan?.app_name||'My App')+' (saved)',
-                    description:'Manually saved',
-                    html_code:builtCode,
-                    tokens_used:0,
-                    build_time:'0',
-                    created_at:new Date().toISOString()
-                  })
-                  addLog('App saved to dashboard.','ok')
-                  addChat('✅ App saved to your dashboard!')
+                  if(currentAppId) {
+                    await supabase.from('apps').update({
+                      html_code: builtCode,
+                      description: (finalPlan?.summary||'') + ' (saved ' + new Date().toLocaleTimeString() + ')'
+                    }).eq('id', currentAppId)
+                    addLog('App updated.','ok')
+                    addChat('✅ App updated in your dashboard!')
+                  } else {
+                    const { data: newRow } = await supabase.from('apps').insert({
+                      user_id:user.id,
+                      name:(finalPlan?.app_name||'My App')+' (saved)',
+                      description:'Manually saved',
+                      html_code:builtCode,
+                      tokens_used:0,
+                      build_time:'0',
+                      created_at:new Date().toISOString()
+                    }).select().single()
+                    if(newRow) {
+                      setCurrentAppId(newRow.id)
+                      localStorage.setItem('jf_last_app_id', newRow.id)
+                      setMyApps(prev => [newRow, ...prev])
+                    }
+                    addLog('App saved to dashboard.','ok')
+                    addChat('✅ App saved to your dashboard!')
+                  }
                 }}
                 disabled={!builtCode}
                 style={{padding:'6px 10px',background:'transparent',border:'1px solid #2e2e48',borderRadius:6,color:builtCode?'#00e5b0':'#5a5a78',fontSize:10,cursor:builtCode?'pointer':'not-allowed',fontFamily:"'Space Mono',monospace",flexShrink:0}}

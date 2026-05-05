@@ -143,12 +143,12 @@ export default function Dashboard() {
                   </button>
                 </div>
               ) : apps.map(app => (
-                <div key={app.id} style={c.appCard}>
+                <div key={app.id} style={c.appCard} onClick={()=>router.push(`/builder?app=${app.id}`)}>
                   <div style={c.appName}>{app.name}</div>
                   <div style={c.appDesc}>{app.description?.substring(0,80)}...</div>
                   <div style={c.appMeta}>
                     <div style={c.appDate}>{new Date(app.created_at).toLocaleDateString()}</div>
-                    <div style={{...c.appStatus, background:'rgba(0,229,176,0.1)', color:'#00e5b0'}}>● Live</div>
+                    <div style={{...c.appStatus, background:'rgba(0,229,176,0.1)', color:'#00e5b0'}}>● Open →</div>
                   </div>
                 </div>
               ))}
