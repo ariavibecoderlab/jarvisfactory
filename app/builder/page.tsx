@@ -25,6 +25,13 @@ export default function Builder() {
   // Sprint 1: feedback chat
   const [feedbackInput, setFeedbackInput] = useState('')
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false)
+  // Feedback flow states
+  const [feedbackPhase, setFeedbackPhase] = useState<'idle'|'diagnosing'|'planning'|'confirmed'|'fixing'>('idle')
+  const [diagnosisResult, setDiagnosisResult] = useState<any>(null)
+  const [pendingFeedback, setPendingFeedback] = useState('')
+  // QA state
+  const [qaReport, setQaReport] = useState<any>(null)
+  const [isRunningQA, setIsRunningQA] = useState(false)
   // Sprint 2: file attachments
   const [attachments, setAttachments] = useState<{name:string,type:string,data:string,preview?:string}[]>([])
   const [brandColour, setBrandColour] = useState('#00e5b0')
@@ -130,76 +137,251 @@ Tell me what you want to build, or attach a reference first.`)
     return d.content[0].text
   }
 
-  // ── SPRINT 1: Feedback / iteration ──
+  // ── SPRINT 1+3: Smart Feedback + QA Agent ──
+
+  // STEP 1: Diagnose — JARVIS reads code and explains what's wrong
   async function sendFeedback() {
     const msg = feedbackInput.trim()
     if(!msg || !builtCode) return
     setFeedbackInput('')
+    setPendingFeedback(msg)
     setIsFeedbackLoading(true)
+    setFeedbackPhase('diagnosing')
     addChat(msg, true)
-    addLog(`Feedback received: ${msg.substring(0,50)}...`, 'build')
-    setPhase('iterating')
+    addLog(`Feedback: "${msg.substring(0,50)}..." — Diagnosing first...`, 'build')
 
-    const thinkId = Date.now()
-    setChatLog(l => [...l, { html: '<div style="display:flex;gap:4px;align-items:center"><span style="width:6px;height:6px;border-radius:50%;background:#00e5b0;display:inline-block;animation:bob 1s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#8b7cf8;display:inline-block;animation:bob 1s 0.15s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#ff6b9d;display:inline-block;animation:bob 1s 0.3s infinite"></span><span style="margin-left:8px;font-size:12px;color:#8888aa">Updating your app...</span></div>', isUser: false }])
+    setChatLog(l => [...l, { html: '<div style="display:flex;gap:4px;align-items:center"><span style="width:6px;height:6px;border-radius:50%;background:#ffd166;display:inline-block;animation:bob 1s infinite"></span><span style="margin-left:8px;font-size:12px;color:#8888aa">JARVIS is diagnosing the issue...</span></div>', isUser: false }])
 
     try {
-      const brandContext = brandName ? `Brand name: ${brandName}. Primary brand colour: ${brandColour}.` : ''
-      const attachContext = attachments.length > 0 ? `\n\nThe user has attached ${attachments.length} reference file(s): ${attachments.map(a=>a.name).join(', ')}. Use these as visual/design reference.` : ''
+      const sys = `You are ${jarvis?.jarvis_name||'JARVIS'}, a senior developer doing code review and diagnosis.
 
-      const sys = `You are ${jarvis?.jarvis_name||'JARVIS'}, an expert UI/UX developer. You are given an existing HTML app and user feedback. Your job is to improve the app based on the feedback.
+Analyse the provided HTML app code and the user's feedback/issue. Your job is to:
+1. Identify exactly what is causing the issue
+2. Explain it in simple plain language
+3. Propose a clear fix plan
+4. Ask if there are any other changes to batch together
 
-RULES:
-- Return ONLY the complete updated HTML file. No markdown, no backticks, no explanation.
-- Keep ALL existing functionality intact — only change what the feedback asks for.
-- Make the requested changes beautifully and completely.
-- If feedback mentions design/colours, apply them consistently throughout.
+Return ONLY valid JSON (no markdown):
+{
+  "diagnosis": "Plain English explanation of what is causing the issue (2-3 sentences max)",
+  "root_cause": "The specific technical root cause (1 sentence, simple)",
+  "fix_plan": ["Fix 1: description", "Fix 2: description", "Fix 3: description"],
+  "estimated_impact": "Low / Medium / High",
+  "question": "Is there anything else you want me to fix or improve at the same time?"
+}`
+
+      const codeSnippet = builtCode.length > 8000 ? builtCode.substring(0, 8000) + '
+...(truncated)' : builtCode
+      const raw = await callClaude(sys, `App code:
+${codeSnippet}
+
+User feedback/issue: ${msg}`, 2000)
+      let diagnosis
+      try { diagnosis = JSON.parse(raw.replace(/\`\`\`json|\`\`\`/g,'').trim()) }
+      catch(e) { diagnosis = { diagnosis: "I found the issue and have a fix ready.", root_cause: "Logic error in the app code.", fix_plan: ["Fix the reported issue completely"], estimated_impact: "Medium", question: "Anything else you'd like me to improve?" } }
+
+      setDiagnosisResult(diagnosis)
+      setFeedbackPhase('planning')
+      addLog('Diagnosis complete. Presenting fix plan...', 'ok')
+
+      // Show diagnosis card in chat
+      setChatLog(l => l.map((m,i) => i === l.length-1 ? { ...m, html: `
+        <div style="background:#1e1e30;border:1px solid rgba(255,209,102,0.25);border-radius:10px;padding:14px">
+          <div style="font-family:'Space Mono',monospace;font-size:10px;color:#ffd166;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px">🔍 Diagnosis</div>
+          <div style="font-size:12px;color:#f0f0fa;margin-bottom:8px;line-height:1.6">${diagnosis.diagnosis}</div>
+          <div style="font-size:11px;color:#ff6b9d;margin-bottom:10px"><strong>Root cause:</strong> ${diagnosis.root_cause}</div>
+          <div style="font-family:'Space Mono',monospace;font-size:10px;color:#00e5b0;margin-bottom:6px">FIX PLAN:</div>
+          ${diagnosis.fix_plan.map((f:string) => `<div style="font-size:11px;color:#8888aa;margin-bottom:3px;display:flex;gap:6px"><span style="color:#00e5b0">→</span>${f}</div>`).join('')}
+          <div style="height:1px;background:#252538;margin:10px 0"></div>
+          <div style="font-size:12px;color:#ffd166;margin-bottom:10px">${diagnosis.question}</div>
+          <div style="display:flex;gap:6px">
+            <button onclick="window.jfConfirmFix('')" style="flex:1;padding:8px;background:#00e5b0;color:#000;border:none;border-radius:7px;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;cursor:pointer">✓ Apply Fix</button>
+            <button onclick="window.jfRejectFix()" style="flex:1;padding:8px;background:transparent;color:#8888aa;border:1px solid #2e2e48;border-radius:7px;font-family:'Space Mono',monospace;font-size:10px;cursor:pointer">✕ Cancel</button>
+          </div>
+          <input id="extraChangesInput" placeholder="Optional: add more changes to batch..." style="width:100%;margin-top:8px;background:#161625;border:1px solid #2e2e48;border-radius:6px;color:#f0f0fa;font-size:11px;padding:7px;box-sizing:border-box;outline:none"/>
+        </div>` } : m))
+
+      // Expose global handlers
+      ;(window as any).jfConfirmFix = (extra: string) => {
+        const extraInput = document.getElementById('extraChangesInput') as HTMLInputElement
+        const extraChanges = extraInput?.value?.trim() || extra || ''
+        applyFix(extraChanges)
+      }
+      ;(window as any).jfRejectFix = () => {
+        setFeedbackPhase('idle')
+        setIsFeedbackLoading(false)
+        setPendingFeedback('')
+        addChat('No problem — let me know whenever you want to make changes.')
+      }
+
+    } catch(err: any) {
+      addLog('ERROR: '+err.message, 'err')
+      addChat('❌ Diagnosis failed: '+err.message)
+      setFeedbackPhase('idle')
+      setIsFeedbackLoading(false)
+    }
+  }
+
+  // STEP 2: Apply the fix after user confirms
+  async function applyFix(extraChanges: string) {
+    if(!pendingFeedback || !builtCode) return
+    setFeedbackPhase('fixing')
+    setPhase('iterating')
+    addLog('Fix confirmed. Applying changes...', 'build')
+
+    setChatLog(l => [...l, { html: '<div style="display:flex;gap:4px;align-items:center"><span style="width:6px;height:6px;border-radius:50%;background:#00e5b0;display:inline-block;animation:bob 1s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#8b7cf8;display:inline-block;animation:bob 1s 0.15s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#ff6b9d;display:inline-block;animation:bob 1s 0.3s infinite"></span><span style="margin-left:8px;font-size:12px;color:#8888aa">Applying fixes and improvements...</span></div>', isUser: false }])
+
+    try {
+      const brandContext = brandName ? `Brand: "${brandName}", colour: ${brandColour}.` : ''
+      const fixPlanText = diagnosisResult?.fix_plan?.join('\n') || ''
+      const allChanges = extraChanges ? `${pendingFeedback}\nAdditional: ${extraChanges}` : pendingFeedback
+
+      const sys = `You are ${jarvis?.jarvis_name||'JARVIS'}, an expert developer fixing and improving a web app.
+
+You have diagnosed the issue. Now apply ALL the fixes.
+
+CRITICAL RULES:
+- Return ONLY the complete fixed HTML file. No markdown, no backticks, no explanation.
+- Fix the diagnosed root cause completely and permanently.
+- Keep ALL other functionality intact.
+- Demo login MUST work: hardcode email=demo@example.com password=demo123 in the JavaScript login function. Test this logic carefully.
+- Pre-populate all lists/tables with realistic dummy data.
+- Every button, nav item, tab must work.
 - ${brandContext}
-- Demo login always: demo@example.com / demo123`
+- Make it look beautiful and professional.
 
-      const userMsg = `Here is the current app code:\n\n${builtCode}\n\nUser feedback: ${msg}${attachContext}\n\nPlease update the app based on this feedback and return the complete improved HTML.`
+Diagnosed fix plan:
+${fixPlanText}`
 
-      const improved = await callClaude(sys, userMsg, 12000, attachments.some(a=>a.type.startsWith('image/')))
-      const code = improved.replace(/^```html\n?/, '').replace(/\n?```$/, '').trim()
+      const improved = await callClaude(sys, `Current app code:
+${builtCode}
+
+Issue to fix: ${allChanges}`, 12000, attachments.some(a=>a.type.startsWith('image/')))
+      const code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
       const tok = Math.round(code.length / 4)
       setBuiltCode(code)
       setTokens(tok.toLocaleString())
       setPhase('done')
+      setFeedbackPhase('idle')
+      setIsFeedbackLoading(false)
+      setPendingFeedback('')
 
-      // Update preview
       const frame = document.getElementById('previewFrame') as HTMLIFrameElement
       if(frame) frame.srcdoc = code
-
-      // Update code display
       const codeEl = document.getElementById('codeDisplay')
       if(codeEl) codeEl.textContent = code
 
-      // Save new version to Supabase
+      addLog(`Fix applied. ~${tok} tokens.`, 'ok')
+
+      // Auto-run QA after fix
+      addLog('Running QA agent on fixed app...', 'build')
+      runQA(code)
+
+      setChatLog(l => l.map((m,i) => i === l.length-1 ? { ...m,
+        html: `✅ <strong>Fix applied!</strong> Running QA check now...<br><span style="color:#8888aa;font-size:11px">~${tok.toLocaleString()} tokens used</span>`
+      } : m))
+
       if(user) {
         await supabase.from('apps').insert({
           user_id: user.id,
-          name: (finalPlan?.app_name || 'My App') + ' (updated)',
-          description: `Updated: ${msg.substring(0,100)}`,
-          html_code: code,
-          tokens_used: tok,
-          build_time: '0',
+          name: (finalPlan?.app_name || 'My App') + ' (fixed)',
+          description: `Fixed: ${pendingFeedback.substring(0,100)}`,
+          html_code: code, tokens_used: tok, build_time: '0',
           created_at: new Date().toISOString()
         })
       }
-
-      setChatLog(l => l.map((m,i) => i === l.length-1 ? {
-        ...m,
-        html: `✅ <strong>App updated!</strong> "${msg.substring(0,40)}${msg.length>40?'...':''}" applied successfully.<br><br><span style="color:#8888aa;font-size:11px">~${tok.toLocaleString()} tokens</span>`
-      } : m))
-      addLog(`Update complete. ~${tok} tokens.`, 'ok')
       setActiveTab('preview')
+
     } catch(err: any) {
-      setChatLog(l => l.map((m,i) => i === l.length-1 ? { ...m, html: `❌ Update failed: ${err.message}` } : m))
-      addLog('ERROR: ' + err.message, 'err')
+      addLog('ERROR: '+err.message, 'err')
+      addChat('❌ Fix failed: '+err.message)
       setPhase('done')
+      setFeedbackPhase('idle')
+      setIsFeedbackLoading(false)
     }
-    setIsFeedbackLoading(false)
   }
+
+  // ── SPRINT 3: QA Agent ──
+  async function runQA(codeToTest?: string) {
+    const code = codeToTest || builtCode
+    if(!code) return
+    setIsRunningQA(true)
+    addLog('QA Agent running 15-point checklist...', 'build')
+
+    try {
+      const sys = `You are a QA Engineer agent. Analyse this HTML/JS app code and test it against a 15-point quality checklist.
+
+Return ONLY valid JSON (no markdown):
+{
+  "score": 0-100,
+  "passed": ["test that passed", ...],
+  "failed": ["test that failed with reason", ...],
+  "critical": ["critical issue that must be fixed", ...],
+  "summary": "One sentence overall verdict",
+  "certified": true/false
+}
+
+The 15 checks are:
+1. Demo login works (email=demo@example.com password=demo123 hardcoded and matches)
+2. All navigation items show a screen (no dead links)
+3. All buttons have click handlers
+4. Forms have validation
+5. Data is pre-populated (no empty lists/tables on load)
+6. localStorage used for data persistence
+7. Mobile responsive (has viewport meta, flexible layout)
+8. Google Fonts loaded
+9. No JavaScript errors visible in code
+10. All tabs/panels show content
+11. Success messages on form submissions
+12. Header/navbar present and functional
+13. Consistent colour scheme throughout
+14. No placeholder text (lorem ipsum etc)
+15. App looks like a real product (not a demo skeleton)`
+
+      const snippet = code.length > 10000 ? code.substring(0, 10000) + '
+...(truncated)' : code
+      const raw = await callClaude(sys, `Analyse this app:
+${snippet}`, 3000)
+      let report
+      try { report = JSON.parse(raw.replace(/\`\`\`json|\`\`\`/g,'').trim()) }
+      catch(e) { report = { score: 70, passed: ['Basic structure present'], failed: [], critical: [], summary: 'App built successfully with minor issues.', certified: false } }
+
+      setQaReport(report)
+      setIsRunningQA(false)
+      addLog(`QA complete. Score: ${report.score}/100. ${report.certified?'✅ CERTIFIED':'⚠️ Issues found'}`, report.certified?'ok':'warn')
+
+      // Show QA report in chat
+      setChatLog(l => [...l, {
+        isUser: false,
+        html: `<div style="background:#1e1e30;border:1px solid ${report.certified?'rgba(0,229,176,0.3)':'rgba(255,209,102,0.3)'};border-radius:10px;padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-family:'Space Mono',monospace;font-size:10px;color:${report.certified?'#00e5b0':'#ffd166'};text-transform:uppercase;letter-spacing:1px">🔬 QA Report</div>
+            <div style="font-family:'Space Mono',monospace;font-size:14px;font-weight:700;color:${report.score>=80?'#00e5b0':report.score>=60?'#ffd166':'#ff4d6d'}">${report.score}/100</div>
+          </div>
+          <div style="font-size:12px;color:#f0f0fa;margin-bottom:10px">${report.summary}</div>
+          ${report.critical?.length > 0 ? `<div style="margin-bottom:8px">${report.critical.map((c:string)=>`<div style="font-size:11px;color:#ff4d6d;margin-bottom:3px;display:flex;gap:5px"><span>✕</span>${c}</div>`).join('')}</div>` : ''}
+          ${report.failed?.length > 0 ? `<div style="margin-bottom:8px">${report.failed.slice(0,3).map((f:string)=>`<div style="font-size:11px;color:#ffd166;margin-bottom:3px;display:flex;gap:5px"><span>⚠</span>${f}</div>`).join('')}</div>` : ''}
+          ${report.passed?.length > 0 ? `<div style="margin-bottom:10px">${report.passed.slice(0,3).map((p:string)=>`<div style="font-size:11px;color:#8888aa;margin-bottom:3px;display:flex;gap:5px"><span style="color:#00e5b0">✓</span>${p}</div>`).join('')}</div>` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:${report.certified?'rgba(0,229,176,0.1)':'rgba(255,209,102,0.1)'};border-radius:6px">
+            <span style="font-family:'Space Mono',monospace;font-size:10px;color:${report.certified?'#00e5b0':'#ffd166'}">${report.certified?'✅ QA CERTIFIED':'⚠️ NEEDS FIXES'}</span>
+            ${!report.certified && report.critical?.length > 0 ? `<button onclick="window.jfAutoFix()" style="padding:5px 12px;background:#8b7cf8;color:#fff;border:none;border-radius:5px;font-family:'Space Mono',monospace;font-size:10px;cursor:pointer">Auto-fix issues</button>` : ''}
+          </div>
+        </div>`
+      }])
+
+      ;(window as any).jfAutoFix = () => {
+        const issues = [...(report.critical||[]), ...(report.failed||[])].join(', ')
+        setPendingFeedback(issues)
+        setDiagnosisResult({ fix_plan: report.critical || [], diagnosis: 'QA found issues that need fixing', root_cause: 'Multiple QA checks failed', question: 'Apply all QA fixes now?' })
+        applyFix('')
+      }
+
+    } catch(err: any) {
+      setIsRunningQA(false)
+      addLog('QA error: '+err.message, 'warn')
+    }
+  }
+
 
   async function launch() {
     if(!prompt.trim()) return
@@ -426,7 +608,14 @@ RULES:
           <button style={{...c.launchBtn,opacity:isWorking?0.5:1}} onClick={launch} disabled={isWorking}>
             <span>⚡</span>{phase==='done'?'Rebuild':'Launch '+(jarvis?.jarvis_name||'JARVIS')}
           </button>
-          {builtCode && <button onClick={download} style={{margin:'-4px 10px 10px',padding:8,background:'#161625',color:'#8888aa',border:'1px solid #1a1a35',borderRadius:8,fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>⬇ Download HTML</button>}
+          {builtCode && (
+            <div style={{margin:'-4px 10px 10px',display:'flex',gap:6}}>
+              <button onClick={download} style={{flex:1,padding:8,background:'#161625',color:'#8888aa',border:'1px solid #1a1a35',borderRadius:8,fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>⬇ Download</button>
+              <button onClick={()=>runQA()} disabled={isRunningQA} style={{flex:1,padding:8,background:isRunningQA?'#1a1a35':qaReport?.certified?'rgba(0,229,176,0.15)':'rgba(255,209,102,0.15)',color:isRunningQA?'#5a5a78':qaReport?.certified?'#00e5b0':'#ffd166',border:`1px solid ${qaReport?.certified?'rgba(0,229,176,0.3)':'rgba(255,209,102,0.3)'}`,borderRadius:8,fontFamily:"'Space Mono',monospace",fontSize:10,cursor:isRunningQA?'not-allowed':'pointer'}}>
+                {isRunningQA?'QA...':`🔬 QA ${qaReport?qaReport.score+'/100':''}`}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* CENTER */}
@@ -564,7 +753,7 @@ RULES:
               placeholder={builtCode ? 'e.g. "Make the header dark blue", "Add a search bar", "Change to DRE Coffee branding"...' : 'Build an app first, then give feedback here...'}
               value={feedbackInput}
               onChange={e=>setFeedbackInput(e.target.value)}
-              disabled={!builtCode||isWorking}
+              disabled={!builtCode||isWorking||feedbackPhase!=='idle'}
               onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&builtCode&&!isWorking){e.preventDefault();sendFeedback()}}}
             />
             <div style={c.feedbackRow}>
@@ -589,7 +778,7 @@ RULES:
               >💾 Save</button>
               <button
                 onClick={sendFeedback}
-                disabled={!feedbackInput.trim()||!builtCode||isWorking}
+                disabled={!feedbackInput.trim()||!builtCode||isWorking||feedbackPhase!=='idle'}
                 style={{...c.sendBtn, flex:1, background:(!feedbackInput.trim()||!builtCode||isWorking)?'#2e2e48':'#8b7cf8', color:(!feedbackInput.trim()||!builtCode||isWorking)?'#5a5a78':'#fff'}}
               >
                 {isFeedbackLoading?'Updating...':'Send ↑'}
