@@ -31,7 +31,7 @@ function Builder() {
   const [jarvisMsg, setJarvisMsg] = useState('')
   const [chatLog, setChatLog] = useState<{html:string,isUser:boolean}[]>([])
   const [logs, setLogs] = useState<{t:string,msg:string,type:string}[]>([
-    {t:'00:00:00',msg:'JARVISFACTORY v5 — App persistence + My Apps picker',type:'info'},
+    {t:'00:00:00',msg:'JARVISFACTORY v5.1 — Fix: Apply Fix unstuck + emergency reset',type:'info'},
     {t:'00:00:00',msg:'Claude Sonnet 4.6 backend ready.',type:'ok'}
   ])
   // Sprint 1: feedback chat
@@ -378,6 +378,13 @@ ${fixPlanText}`
       }
       setActiveTab('preview')
 
+      // ── v5.1 fix: Reset all phase states after successful fix ──
+      setPhase('done')
+      setFeedbackPhase('idle')
+      setIsFeedbackLoading(false)
+      setPendingFeedback('')
+      setDiagnosisResult(null)
+
     } catch(err: any) {
       addLog('ERROR: '+err.message, 'err')
       addChat('❌ Fix failed: '+err.message)
@@ -631,7 +638,7 @@ RULES:
       <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.csv" onChange={handleFileAttach} style={{display:'none'}}/>
 
       <nav style={c.nav}>
-        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5</span></div>
+        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.1</span></div>
         <div style={{display:'flex',gap:10,alignItems:'center',position:'relative' as const}}>
           {currentAppId && finalPlan?.app_name && (
             <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#00e5b0',padding:'4px 8px',background:'rgba(0,229,176,0.08)',border:'1px solid rgba(0,229,176,0.2)',borderRadius:6,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>📂 {finalPlan.app_name}</span>
@@ -719,6 +726,11 @@ RULES:
           <button style={{...c.launchBtn,opacity:isWorking?0.5:1}} onClick={launch} disabled={isWorking}>
             <span>⚡</span>{phase==='done'?'Rebuild':'Launch '+(jarvis?.jarvis_name||'JARVIS')}
           </button>
+          {isWorking && builtCode && (
+            <button onClick={()=>{setPhase('done');setFeedbackPhase('idle');setIsFeedbackLoading(false);setPendingFeedback('');setDiagnosisResult(null);addLog('Reset: unstuck.','ok');addChat('🔄 Stuck state cleared. You can give feedback again.')}} style={{margin:'-4px 10px 10px',padding:8,background:'rgba(255,107,157,0.1)',color:'#ff6b9d',border:'1px solid rgba(255,107,157,0.3)',borderRadius:8,fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>
+              🔄 Stuck? Click to reset
+            </button>
+          )}
           {builtCode && (
             <div style={{margin:'-4px 10px 10px',display:'flex',gap:6}}>
               <button onClick={download} style={{flex:1,padding:8,background:'#161625',color:'#8888aa',border:'1px solid #1a1a35',borderRadius:8,fontFamily:"'Space Mono',monospace",fontSize:10,cursor:'pointer'}}>⬇ Download</button>
