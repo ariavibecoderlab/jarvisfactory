@@ -32,7 +32,7 @@ function Builder() {
   const [jarvisMsg, setJarvisMsg] = useState('')
   const [chatLog, setChatLog] = useState<{html:string,isUser:boolean}[]>([])
   const [logs, setLogs] = useState<{t:string,msg:string,type:string}[]>([
-    {t:'00:00:00',msg:'JARVISFACTORY v5.2 — Real Supabase backend for built apps',type:'info'},
+    {t:'00:00:00',msg:'JARVISFACTORY v5.3 — Diagnose now Jarvis-backend aware',type:'info'},
     {t:'00:00:00',msg:'Claude Sonnet 4.6 backend ready.',type:'ok'}
   ])
   // Sprint 1: feedback chat
@@ -266,16 +266,46 @@ Analyse the provided HTML app code and the user's feedback/issue. Your job is to
 3. Propose a clear fix plan
 4. Ask if there are any other changes to batch together
 
+🔌 CRITICAL CONTEXT — THIS APP HAS A REAL BACKEND:
+A global \`window.Jarvis\` object is auto-injected into every app. It provides Supabase-backed:
+  - Jarvis.signup(email, password, fullName, role)
+  - Jarvis.login(email, password)
+  - Jarvis.logout()
+  - Jarvis.getCurrentUser()
+  - Jarvis.isLoggedIn()
+  - Jarvis.saveData(table, key, value)   // upsert
+  - Jarvis.loadData(table) / Jarvis.loadData(table, key)
+  - Jarvis.deleteData(table, key)
+  - Jarvis.listUsers()  // admin
+
+DIAGNOSIS RULES:
+- If you see localStorage used for USER ACCOUNTS, AUTH, or APP DATA, that is ALWAYS a bug. The fix is ALWAYS to refactor to window.Jarvis.* methods. Never suggest "fix the localStorage code" — suggest replacing it.
+- Hardcoded demo credentials (e.g. demo@example.com / demo123) are ALWAYS a bug. The fix is to use Jarvis.signup() and Jarvis.login() with real Supabase persistence.
+- localStorage is ONLY acceptable for non-sensitive UI state (e.g. dark mode toggle, last-viewed-tab).
+- If user reports "cannot signup" or "cannot login" — root cause is almost certainly that the app is using localStorage instead of the Jarvis backend. Recommend full auth refactor to window.Jarvis.
+
 Return ONLY valid JSON (no markdown):
 {
-  "diagnosis": "Plain English explanation of what is causing the issue (2-3 sentences max)",
-  "root_cause": "The specific technical root cause (1 sentence, simple)",
+  "diagnosis": "Plain English explanation (2-3 sentences). If localStorage auth detected, explicitly say 'this app uses localStorage instead of the real Supabase backend that's available'.",
+  "root_cause": "The specific technical root cause (1 sentence)",
   "fix_plan": ["Fix 1: description", "Fix 2: description", "Fix 3: description"],
   "estimated_impact": "Low / Medium / High",
   "question": "Is there anything else you want me to fix or improve at the same time?"
 }`
 
-      const codeSnippet = builtCode.length > 8000 ? builtCode.substring(0, 8000) + '...(truncated)' : builtCode
+      // v5.3: Strip the injected Jarvis backend <script> block before truncating,
+      // so the 8000-char window shows JARVIS the actual app code (not the lib boilerplate).
+      let codeForReview = builtCode
+      const libStart = codeForReview.indexOf('<script>\n(function(){\n  var SUPABASE_URL')
+      if(libStart !== -1) {
+        const libEnd = codeForReview.indexOf('</script>', libStart)
+        if(libEnd !== -1) {
+          codeForReview = codeForReview.substring(0, libStart) +
+            '<!-- [Jarvis backend lib auto-injected here - window.Jarvis is available globally] -->' +
+            codeForReview.substring(libEnd + '</script>'.length)
+        }
+      }
+      const codeSnippet = codeForReview.length > 8000 ? codeForReview.substring(0, 8000) + '...(truncated)' : codeForReview
       const raw = await callClaude(sys, 'App code:\n' + codeSnippet + '\n\nUser feedback/issue: ' + msg, 2000)
       let diagnosis
       try { diagnosis = JSON.parse(raw.replace(/\`\`\`json|\`\`\`/g,'').trim()) }
@@ -721,7 +751,7 @@ CRITICAL: For first-time empty states, show a friendly onboarding screen, NOT fa
       <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.csv" onChange={handleFileAttach} style={{display:'none'}}/>
 
       <nav style={c.nav}>
-        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.2</span></div>
+        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.3</span></div>
         <div style={{display:'flex',gap:10,alignItems:'center',position:'relative' as const}}>
           {currentAppId && finalPlan?.app_name && (
             <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#00e5b0',padding:'4px 8px',background:'rgba(0,229,176,0.08)',border:'1px solid rgba(0,229,176,0.2)',borderRadius:6,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>📂 {finalPlan.app_name}</span>
