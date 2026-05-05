@@ -170,12 +170,8 @@ Return ONLY valid JSON (no markdown):
   "question": "Is there anything else you want me to fix or improve at the same time?"
 }`
 
-      const codeSnippet = builtCode.length > 8000 ? builtCode.substring(0, 8000) + '
-...(truncated)' : builtCode
-      const raw = await callClaude(sys, `App code:
-${codeSnippet}
-
-User feedback/issue: ${msg}`, 2000)
+      const codeSnippet = builtCode.length > 8000 ? builtCode.substring(0, 8000) + '...(truncated)' : builtCode
+      const raw = await callClaude(sys, 'App code:\n' + codeSnippet + '\n\nUser feedback/issue: ' + msg, 2000)
       let diagnosis
       try { diagnosis = JSON.parse(raw.replace(/\`\`\`json|\`\`\`/g,'').trim()) }
       catch(e) { diagnosis = { diagnosis: "I found the issue and have a fix ready.", root_cause: "Logic error in the app code.", fix_plan: ["Fix the reported issue completely"], estimated_impact: "Medium", question: "Anything else you'd like me to improve?" } }
@@ -253,10 +249,7 @@ CRITICAL RULES:
 Diagnosed fix plan:
 ${fixPlanText}`
 
-      const improved = await callClaude(sys, `Current app code:
-${builtCode}
-
-Issue to fix: ${allChanges}`, 12000, attachments.some(a=>a.type.startsWith('image/')))
+      const improved = await callClaude(sys, 'Current app code:\n' + builtCode + '\n\nIssue to fix: ' + allChanges, 12000, attachments.some(a=>a.type.startsWith('image/')))
       const code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
       const tok = Math.round(code.length / 4)
       setBuiltCode(code)
@@ -338,10 +331,8 @@ The 15 checks are:
 14. No placeholder text (lorem ipsum etc)
 15. App looks like a real product (not a demo skeleton)`
 
-      const snippet = code.length > 10000 ? code.substring(0, 10000) + '
-...(truncated)' : code
-      const raw = await callClaude(sys, `Analyse this app:
-${snippet}`, 3000)
+      const snippet = code.length > 10000 ? code.substring(0, 10000) + '...(truncated)' : code
+      const raw = await callClaude(sys, 'Analyse this app:\n' + snippet, 3000)
       let report
       try { report = JSON.parse(raw.replace(/\`\`\`json|\`\`\`/g,'').trim()) }
       catch(e) { report = { score: 70, passed: ['Basic structure present'], failed: [], critical: [], summary: 'App built successfully with minor issues.', certified: false } }
