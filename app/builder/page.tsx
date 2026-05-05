@@ -139,7 +139,11 @@ RULES:
 - Malaysian context: RM currency, DuitNow where relevant.
 - Islamic elements where appropriate.
 - Real functionality — not placeholders.
-- Looks like a real product someone would pay for.`
+- Looks like a real product someone would pay for.
+- IF APP HAS LOGIN: hardcode demo credentials email=demo@example.com password=demo123. Show hint on login page: Demo Login: demo@example.com / demo123.
+- PRE-POPULATE with realistic dummy data so app looks alive immediately.
+- EVERY button must work — simulate backend with localStorage, show success messages.
+- ALL navigation, tabs, menu items must show a real screen.`
       const html = await callClaude(sys,`Build: ${prompt}\nPreferences: ${answers}`)
       clearInterval(timerRef.current)
       const code = html.replace(/^```html\n?/,'').replace(/\n?```$/,'').trim()
