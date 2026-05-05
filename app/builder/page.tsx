@@ -556,31 +556,46 @@ RULES:
 
           {/* ── SPRINT 1: FEEDBACK INPUT ── */}
           <div style={c.feedbackArea}>
-            {phase==='done' && (
-              <div style={{fontSize:9,fontFamily:"'Space Mono',monospace",color:'#8b7cf8',marginBottom:5,letterSpacing:0.5}}>
-                💬 GIVE FEEDBACK — JARVIS WILL IMPROVE THE APP
-              </div>
-            )}
+            <div style={{fontSize:9,fontFamily:"'Space Mono',monospace",color:builtCode&&!isWorking?'#8b7cf8':'#5a5a78',marginBottom:5,letterSpacing:0.5}}>
+              {builtCode && !isWorking ? '💬 JARVIS IS LISTENING — TYPE FEEDBACK TO IMPROVE THE APP' : '⚡ BUILD AN APP FIRST — THEN GIVE FEEDBACK HERE'}
+            </div>
             <textarea
-              style={{...c.feedbackInput, opacity: phase==='done'?1:0.4}}
-              placeholder={phase==='done' ? 'e.g. "Make the header dark", "Add a search bar", "Change buttons to blue"...' : 'Build an app first, then chat here to improve it...'}
+              style={{...c.feedbackInput, opacity: builtCode&&!isWorking?1:0.35, borderColor: builtCode&&!isWorking?'rgba(139,124,248,0.4)':'#2e2e48'}}
+              placeholder={builtCode ? 'e.g. "Make the header dark blue", "Add a search bar", "Change to DRE Coffee branding"...' : 'Build an app first, then give feedback here...'}
               value={feedbackInput}
               onChange={e=>setFeedbackInput(e.target.value)}
-              disabled={phase!=='done'}
-              onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&phase==='done'){e.preventDefault();sendFeedback()}}}
+              disabled={!builtCode||isWorking}
+              onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&builtCode&&!isWorking){e.preventDefault();sendFeedback()}}}
             />
             <div style={c.feedbackRow}>
               <button onClick={()=>fileInputRef.current?.click()} style={c.attachBtn} title="Attach reference image">📎</button>
               <button
+                onClick={async()=>{
+                  if(!builtCode||!user) return
+                  await supabase.from('apps').insert({
+                    user_id:user.id,
+                    name:(finalPlan?.app_name||'My App')+' (saved)',
+                    description:'Manually saved',
+                    html_code:builtCode,
+                    tokens_used:0,
+                    build_time:'0',
+                    created_at:new Date().toISOString()
+                  })
+                  addLog('App saved to dashboard.','ok')
+                  addChat('✅ App saved to your dashboard!')
+                }}
+                disabled={!builtCode}
+                style={{padding:'6px 10px',background:'transparent',border:'1px solid #2e2e48',borderRadius:6,color:builtCode?'#00e5b0':'#5a5a78',fontSize:10,cursor:builtCode?'pointer':'not-allowed',fontFamily:"'Space Mono',monospace",flexShrink:0}}
+              >💾 Save</button>
+              <button
                 onClick={sendFeedback}
-                disabled={!feedbackInput.trim()||phase!=='done'||isFeedbackLoading}
-                style={c.sendBtn}
+                disabled={!feedbackInput.trim()||!builtCode||isWorking}
+                style={{...c.sendBtn, flex:1, background:(!feedbackInput.trim()||!builtCode||isWorking)?'#2e2e48':'#8b7cf8', color:(!feedbackInput.trim()||!builtCode||isWorking)?'#5a5a78':'#fff'}}
               >
-                {isFeedbackLoading?'Updating...':'Send Feedback ↑'}
+                {isFeedbackLoading?'Updating...':'Send ↑'}
               </button>
             </div>
-          </div>
-        </div>
+          </div>        </div>
       </div>
     </div>
   )
