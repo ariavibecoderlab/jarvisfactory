@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { JARVIS_BACKEND_LIB } from '@/lib/jarvis-backend'
 
 export default function BuilderPage() {
   return (
@@ -31,7 +32,7 @@ function Builder() {
   const [jarvisMsg, setJarvisMsg] = useState('')
   const [chatLog, setChatLog] = useState<{html:string,isUser:boolean}[]>([])
   const [logs, setLogs] = useState<{t:string,msg:string,type:string}[]>([
-    {t:'00:00:00',msg:'JARVISFACTORY v5.1 — Fix: Apply Fix unstuck + emergency reset',type:'info'},
+    {t:'00:00:00',msg:'JARVISFACTORY v5.2 — Real Supabase backend for built apps',type:'info'},
     {t:'00:00:00',msg:'Claude Sonnet 4.6 backend ready.',type:'ok'}
   ])
   // Sprint 1: feedback chat
@@ -84,7 +85,12 @@ function Builder() {
 
       if(appToRestore) {
         setCurrentAppId(appToRestore.id)
-        setBuiltCode(appToRestore.html_code || '')
+        // v5.2: Auto-inject backend into legacy apps that don't have it
+        let restoredCode = appToRestore.html_code || ''
+        if(restoredCode && !restoredCode.includes('window.Jarvis')) {
+          restoredCode = injectBackend(restoredCode, appToRestore.id)
+        }
+        setBuiltCode(restoredCode)
         setFinalPlan({ app_name: appToRestore.name, summary: appToRestore.description })
         setPrompt(appToRestore.description || '')
         setTokens(String(appToRestore.tokens_used||'—'))
@@ -99,11 +105,11 @@ You can keep editing it via chat below, or start a new app with the "<strong>+ N
       } else {
         setJarvisMsg(`Good day. I'm <strong style="color:#00e5b0">${j?.jarvis_name||'JARVIS'}</strong> — your personal AI developer.<br><br>
 I specialise in <strong>${j?.industry||'your industry'}</strong> apps.<br><br>
-<strong style="color:#ffd166">New in v2.0:</strong><br>
-📎 Attach images, PDFs, or docs as design references<br>
-💬 Chat with me after I build to improve anything<br>
-🎨 Set your brand colour for consistent design<br><br>
-Tell me what you want to build, or attach a reference first.`)
+<strong style="color:#ffd166">New in v5.2:</strong><br>
+🔌 Real Supabase backend — your apps now have real signup/login<br>
+💾 Persistent data across devices, not just localStorage<br>
+🎨 Multi-user with full data isolation per app<br><br>
+Tell me what you want to build.`)
       }
     }
     load()
@@ -123,10 +129,29 @@ Tell me what you want to build, or attach a reference first.`)
 
   function getKey() { return localStorage.getItem('jf_anthropic_key')||'' }
 
+  // ── v5.2: Inject Supabase-backed auth + data library into generated HTML ──
+  function injectBackend(html: string, appId: string): string {
+    const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+    const supaKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ''
+    const lib = JARVIS_BACKEND_LIB
+      .replace('__SUPABASE_URL__', supaUrl)
+      .replace('__SUPABASE_ANON__', supaKey)
+      .replace('__APP_ID__', appId)
+    // Inject right before </head> if found, else after <body>, else prepend
+    if(html.includes('</head>')) return html.replace('</head>', lib + '\n</head>')
+    if(html.includes('<body>')) return html.replace('<body>', '<body>\n' + lib)
+    return lib + '\n' + html
+  }
+
   // ── v5: App switching ──
   function switchToApp(app: any) {
     setCurrentAppId(app.id)
-    setBuiltCode(app.html_code || '')
+    // v5.2: Auto-inject backend if missing
+    let code = app.html_code || ''
+    if(code && !code.includes('window.Jarvis')) {
+      code = injectBackend(code, app.id)
+    }
+    setBuiltCode(code)
     setFinalPlan({ app_name: app.name, summary: app.description })
     setPrompt(app.description || '')
     setTokens(String(app.tokens_used||'—'))
@@ -320,17 +345,44 @@ CRITICAL RULES:
 - Return ONLY the complete fixed HTML file. No markdown, no backticks, no explanation.
 - Fix the diagnosed root cause completely and permanently.
 - Keep ALL other functionality intact.
-- Demo login MUST work: hardcode email=demo@example.com password=demo123 in the JavaScript login function. Test this logic carefully.
-- Pre-populate all lists/tables with realistic dummy data.
+- Pre-populate all lists/tables with realistic dummy data ONLY for visual reference, but real signed-up users get a clean empty state.
 - Every button, nav item, tab must work.
 - ${brandContext}
 - Make it look beautiful and professional.
+
+🔌 BACKEND IS PROVIDED — use \`window.Jarvis\` for ALL auth and data persistence.
+DO NOT use localStorage for user data. DO NOT hardcode demo credentials.
+
+API REFERENCE (use exactly these names):
+  await Jarvis.signup(email, password, fullName, role)
+  await Jarvis.login(email, password)
+  Jarvis.logout()
+  Jarvis.getCurrentUser()
+  Jarvis.isLoggedIn()
+  await Jarvis.saveData(table, key, value)
+  await Jarvis.loadData(table)            // all rows
+  await Jarvis.loadData(table, key)       // one row
+  await Jarvis.deleteData(table, key)
+  await Jarvis.listUsers()                 // admin
+
+PATTERN FOR LOGIN-GATED APPS:
+  - On page load: if(Jarvis.isLoggedIn()) show dashboard; else show login.
+  - Signup form → Jarvis.signup(...) wrapped in try/catch with error display.
+  - Login form → Jarvis.login(...) with try/catch.
+  - Logout button → Jarvis.logout() then show login screen or location.reload().
+  - All app data → Jarvis.saveData / loadData. NEVER localStorage for user-specific data.
+
+CRITICAL: Do NOT include the JARVIS library script — it is auto-injected. Just CALL the methods.
 
 Diagnosed fix plan:
 ${fixPlanText}`
 
       const improved = await callClaude(sys, 'Current app code:\n' + builtCode + '\n\nIssue to fix: ' + allChanges, 12000, attachments.some(a=>a.type.startsWith('image/')))
-      const code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
+      let code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
+      // v5.2: Re-inject backend in case JARVIS removed it
+      if(currentAppId && !code.includes('window.Jarvis')) {
+        code = injectBackend(code, currentAppId)
+      }
       const tok = Math.round(code.length / 4)
       setBuiltCode(code)
       setTokens(tok.toLocaleString())
@@ -356,11 +408,12 @@ ${fixPlanText}`
 
       if(user) {
         if(currentAppId) {
-          // Update existing app
+          // Update existing app — don't pollute description with every fix
           await supabase.from('apps').update({
-            html_code: code, tokens_used: tok,
-            description: `${finalPlan?.summary || ''} | Fixed: ${pendingFeedback.substring(0,80)}`
+            html_code: code, tokens_used: tok
           }).eq('id', currentAppId)
+          // Update local state so the picker reflects new tokens count
+          setMyApps(prev => prev.map(a => a.id === currentAppId ? {...a, html_code: code, tokens_used: tok} : a))
         } else {
           const { data: newRow } = await supabase.from('apps').insert({
             user_id: user.id,
@@ -539,22 +592,47 @@ RULES:
 - Return ONLY raw HTML. No markdown, no backticks, no explanation.
 - All CSS and JS inline in one file.
 - BEAUTIFUL UI — professional design, smooth animations, cohesive colour scheme.
-- FULLY FUNCTIONAL — all buttons work, data saves to localStorage.
+- FULLY FUNCTIONAL — all buttons work.
 - Mobile responsive. Use Google Fonts (import via CDN).
 - Malaysian context: RM currency, DuitNow where relevant.
 - Islamic elements where appropriate (Bismillah on forms, halal labelling).
-- Real functionality — not placeholders. Pre-populate with dummy data.
+- Real functionality — not placeholders. Pre-populate UI with realistic dummy state where helpful.
 - Looks like a real product someone would pay for.
-- IF APP HAS LOGIN: hardcode demo@example.com / demo123. Show hint on login screen.
-- EVERY button must do something. ALL navigation must show a screen.${brandContext}${attachContext}`
+- EVERY button must do something. ALL navigation must show a screen.
+
+🔌 BACKEND IS PROVIDED — DO NOT WRITE YOUR OWN AUTH OR localStorage USER STORAGE.
+A global \`window.Jarvis\` object is automatically available in every app you build, backed by a real Supabase database. Use it for ALL auth and data persistence.
+
+API REFERENCE (use these EXACT method names):
+  await Jarvis.signup(email, password, fullName, role)  // creates user, auto-logs-in
+  await Jarvis.login(email, password)                    // returns {success:true, user}
+  Jarvis.logout()                                        // clears session
+  Jarvis.getCurrentUser()                                // returns user obj or null
+  Jarvis.isLoggedIn()                                    // returns boolean
+  await Jarvis.saveData(table, key, value)               // upsert any record. e.g. Jarvis.saveData('staff','staff-1',{name:'Ali',birthday:'1990-01-15'})
+  await Jarvis.loadData(table)                           // load all rows in a table → array
+  await Jarvis.loadData(table, key)                      // load one record → object
+  await Jarvis.deleteData(table, key)
+  await Jarvis.listUsers()                               // admin: list all signed-up users
+
+REQUIRED PATTERN FOR APPS WITH LOGIN:
+  1. On page load: if(Jarvis.isLoggedIn()) show dashboard; else show login screen.
+  2. Signup form calls Jarvis.signup() — handle errors with try/catch and show user-friendly message.
+  3. Login form calls Jarvis.login() — same error handling.
+  4. Logout button calls Jarvis.logout() then reloads or shows login screen.
+  5. ALL data save/load uses Jarvis.saveData/loadData — NEVER localStorage for app data.
+  6. Wrap all Jarvis calls in try/catch and show errors to the user (small toast/alert div).
+
+CRITICAL: Do NOT include the JARVIS library script yourself — it is auto-injected into <head>. Just CALL the methods.
+CRITICAL: Do NOT hardcode demo credentials anymore — real signup works now.
+CRITICAL: For first-time empty states, show a friendly onboarding screen, NOT fake dummy data that will confuse users.${brandContext}${attachContext}`
 
       const userMsg = `Build this app: ${prompt}\nUser preferences: ${answers}` + (attachments.filter(a=>a.type.startsWith('image/')).length > 0 ? '\n\nIMPORTANT: Reference images are attached. Match their visual style, colour palette, and UI patterns closely.' : '')
 
       const html = await callClaude(sys, userMsg, 12000, attachments.some(a=>a.type.startsWith('image/')))
       clearInterval(timerRef.current)
-      const code = html.replace(/^```html\n?/, '').replace(/\n?```$/, '').trim()
+      let code = html.replace(/^```html\n?/, '').replace(/\n?```$/, '').trim()
       const tok = Math.round(code.length / 4)
-      setBuiltCode(code)
       setTokens(tok.toLocaleString())
       setPhase('done')
       addLog(`DONE. ~${tok} tokens, ${((Date.now()-startRef.current)/1000).toFixed(1)}s`, 'ok')
@@ -570,11 +648,16 @@ RULES:
           created_at: new Date().toISOString()
         }).select().single()
         if(newRow) {
+          // v5.2: Inject backend library NOW that we have the appId
+          code = injectBackend(code, newRow.id)
+          // Update the saved row with the injected version
+          await supabase.from('apps').update({ html_code: code }).eq('id', newRow.id)
           setCurrentAppId(newRow.id)
           localStorage.setItem('jf_last_app_id', newRow.id)
-          setMyApps(prev => [newRow, ...prev])
+          setMyApps(prev => [{...newRow, html_code: code}, ...prev])
         }
       }
+      setBuiltCode(code)
       setTimeout(() => setActiveTab('preview'), 800)
     } catch(err: any) {
       clearInterval(timerRef.current)
@@ -638,7 +721,7 @@ RULES:
       <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.csv" onChange={handleFileAttach} style={{display:'none'}}/>
 
       <nav style={c.nav}>
-        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.1</span></div>
+        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.2</span></div>
         <div style={{display:'flex',gap:10,alignItems:'center',position:'relative' as const}}>
           {currentAppId && finalPlan?.app_name && (
             <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#00e5b0',padding:'4px 8px',background:'rgba(0,229,176,0.08)',border:'1px solid rgba(0,229,176,0.2)',borderRadius:6,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>📂 {finalPlan.app_name}</span>
