@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, Suspense } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { JARVIS_BACKEND_LIB } from '@/lib/jarvis-backend'
+import { AUTH_PATTERN_REFERENCE, validateBuild, promptRequiresAuth } from '@/lib/jarvis-patterns'
 
 export default function BuilderPage() {
   return (
@@ -32,7 +33,7 @@ function Builder() {
   const [jarvisMsg, setJarvisMsg] = useState('')
   const [chatLog, setChatLog] = useState<{html:string,isUser:boolean}[]>([])
   const [logs, setLogs] = useState<{t:string,msg:string,type:string}[]>([
-    {t:'00:00:00',msg:'JARVISFACTORY v5.3 — Diagnose now Jarvis-backend aware',type:'info'},
+    {t:'00:00:00',msg:'JARVISFACTORY v6 — Few-shot example + validator + auto-retry',type:'info'},
     {t:'00:00:00',msg:'Claude Sonnet 4.6 backend ready.',type:'ok'}
   ])
   // Sprint 1: feedback chat
@@ -407,8 +408,27 @@ CRITICAL: Do NOT include the JARVIS library script — it is auto-injected. Just
 Diagnosed fix plan:
 ${fixPlanText}`
 
-      const improved = await callClaude(sys, 'Current app code:\n' + builtCode + '\n\nIssue to fix: ' + allChanges, 12000, attachments.some(a=>a.type.startsWith('image/')))
-      let code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
+      // v6: Build → Validate → Retry on fix path too
+      const fixNeedsAuth = promptRequiresAuth(prompt + ' ' + allChanges, '')
+      let code = ''
+      let validation: any = null
+      const FIX_MAX_RETRIES = 1
+      let fixAttempt = 0
+
+      while (fixAttempt <= FIX_MAX_RETRIES) {
+        let extraMsg = 'Current app code:\n' + builtCode + '\n\nIssue to fix: ' + allChanges
+        if (fixAttempt > 0) {
+          extraMsg += `\n\n⚠️ PREVIOUS FIX FAILED VALIDATION:\n${validation.errors.map((e:string)=>'- '+e).join('\n')}\n\nFix these too. Use Jarvis.signup/login NOT localStorage. NO hardcoded demo creds.`
+          addLog(`Fix retry ${fixAttempt}/${FIX_MAX_RETRIES}...`, 'info')
+        }
+
+        const improved = await callClaude(sys, extraMsg, 12000, attachments.some(a=>a.type.startsWith('image/')))
+        code = improved.replace(/^\`\`\`html\n?/, '').replace(/\n?\`\`\`$/, '').trim()
+        validation = validateBuild(code, fixNeedsAuth)
+        if (validation.valid || fixAttempt >= FIX_MAX_RETRIES) break
+        fixAttempt++
+      }
+
       // v5.2: Re-inject backend in case JARVIS removed it
       if(currentAppId && !code.includes('window.Jarvis')) {
         code = injectBackend(code, currentAppId)
@@ -426,7 +446,8 @@ ${fixPlanText}`
       const codeEl = document.getElementById('codeDisplay')
       if(codeEl) codeEl.textContent = code
 
-      addLog(`Fix applied. ~${tok} tokens.`, 'ok')
+      const validIcon = validation?.valid ? '✅' : '⚠️'
+      addLog(`Fix applied. ${validIcon} ~${tok} tokens.`, 'ok')
 
       // Auto-run QA after fix
       addLog('Running QA agent on fixed app...', 'build')
@@ -617,7 +638,11 @@ Generate 3 clarifying questions with options. Return ONLY valid JSON, no markdow
       const brandContext = brandName ? `\n- Brand name: "${brandName}". Use this in the app header/title.\n- Primary brand colour: ${brandColour}. Use this as the main accent colour throughout.` : ''
       const attachContext = attachments.length > 0 ? `\n- The user has attached ${attachments.length} reference file(s): ${attachments.map(a=>a.name).join(', ')}. Use these as visual/design inspiration — match the style, layout, and aesthetic shown in the references.` : ''
 
-      const sys = `You are ${jarvis?.jarvis_name||'JARVIS'}. Build a complete, beautiful, fully-functional single-file HTML app.
+      // ── v6 Layer 1: Detect auth requirement, inject reference pattern only when needed ──
+      const needsAuth = promptRequiresAuth(prompt, answers)
+      const fewShotBlock = needsAuth ? `\n\n═══ REFERENCE PATTERN — FOLLOW THIS EXACTLY ═══${AUTH_PATTERN_REFERENCE}\n═══ END REFERENCE PATTERN ═══\n` : ''
+
+      const sysBase = `You are ${jarvis?.jarvis_name||'JARVIS'}. Build a complete, beautiful, fully-functional single-file HTML app.
 RULES:
 - Return ONLY raw HTML. No markdown, no backticks, no explanation.
 - All CSS and JS inline in one file.
@@ -655,19 +680,60 @@ REQUIRED PATTERN FOR APPS WITH LOGIN:
 
 CRITICAL: Do NOT include the JARVIS library script yourself — it is auto-injected into <head>. Just CALL the methods.
 CRITICAL: Do NOT hardcode demo credentials anymore — real signup works now.
-CRITICAL: For first-time empty states, show a friendly onboarding screen, NOT fake dummy data that will confuse users.${brandContext}${attachContext}`
+CRITICAL: For first-time empty states, show a friendly onboarding screen, NOT fake dummy data that will confuse users.${brandContext}${attachContext}${fewShotBlock}`
 
       const userMsg = `Build this app: ${prompt}\nUser preferences: ${answers}` + (attachments.filter(a=>a.type.startsWith('image/')).length > 0 ? '\n\nIMPORTANT: Reference images are attached. Match their visual style, colour palette, and UI patterns closely.' : '')
 
-      const html = await callClaude(sys, userMsg, 12000, attachments.some(a=>a.type.startsWith('image/')))
+      // ── v6 Layer 2+3: Build → Validate → Retry on validation failure (max 2 retries) ──
+      let code = ''
+      let validation: any = null
+      const MAX_RETRIES = 2
+      let attempt = 0
+
+      while (attempt <= MAX_RETRIES) {
+        let sys = sysBase
+        let extraUserMsg = userMsg
+
+        if (attempt > 0) {
+          // Retry: tell JARVIS exactly what was wrong with the previous attempt
+          extraUserMsg = `${userMsg}\n\n⚠️ PREVIOUS ATTEMPT FAILED VALIDATION:\n${validation.errors.map((e:string)=>'- '+e).join('\n')}\n\nFix these issues and try again. Make sure to use Jarvis.signup/login/saveData NOT localStorage. NO hardcoded demo credentials.`
+          addLog(`Retry ${attempt}/${MAX_RETRIES}: validator caught issues, asking JARVIS to fix...`, 'info')
+          addChat(`🔄 Auto-retry ${attempt}/${MAX_RETRIES} — validator caught: <em>${validation.errors[0]}</em>`)
+        }
+
+        const html = await callClaude(sys, extraUserMsg, 12000, attachments.some(a=>a.type.startsWith('image/')))
+        code = html.replace(/^```html\n?/, '').replace(/\n?```$/, '').trim()
+
+        validation = validateBuild(code, needsAuth)
+
+        if (validation.valid) {
+          if (attempt > 0) addLog(`Retry succeeded on attempt ${attempt+1}`, 'ok')
+          break
+        }
+
+        addLog(`Validation failed: ${validation.errors.join('; ')}`, 'err')
+        attempt++
+        if (attempt > MAX_RETRIES) {
+          // Out of retries — log warnings but ship the last attempt anyway
+          addLog(`Max retries reached. Shipping last attempt — manual feedback may be needed.`, 'err')
+          addChat(`⚠️ <strong>Validation warnings remain:</strong><br>${validation.errors.map((e:string)=>'• '+e).join('<br>')}<br><br>App is shipped but may have issues. Use feedback chat to fix specific problems.`)
+          break
+        }
+      }
+
+      // Show validation warnings even on success
+      if (validation && validation.warnings.length > 0) {
+        addLog(`Warnings: ${validation.warnings.join('; ')}`, 'info')
+      }
+
       clearInterval(timerRef.current)
-      let code = html.replace(/^```html\n?/, '').replace(/\n?```$/, '').trim()
       const tok = Math.round(code.length / 4)
       setTokens(tok.toLocaleString())
       setPhase('done')
-      addLog(`DONE. ~${tok} tokens, ${((Date.now()-startRef.current)/1000).toFixed(1)}s`, 'ok')
+      const validIcon = validation?.valid ? '✅' : '⚠️'
+      addLog(`DONE. ${validIcon} ~${tok} tokens, ${((Date.now()-startRef.current)/1000).toFixed(1)}s, ${attempt+1} attempt${attempt>0?'s':''}`, 'ok')
       addLog('Tip: Type feedback in the chat below to improve anything!', 'ok')
-      addChat(`🚀 <strong>Build complete!</strong> <strong style="color:#00e5b0">${tok.toLocaleString()} tokens</strong> · <strong style="color:#ffd166">${((Date.now()-startRef.current)/1000).toFixed(1)}s</strong><br><br>Switch to <strong>⬡ Preview</strong> to test it.<br><br><span style="color:#8b7cf8;font-size:11px">💬 Type feedback below to improve anything — I'm still here!</span>`)
+      addChat(`🚀 <strong>Build complete!</strong> ${validIcon} <strong style="color:#00e5b0">${tok.toLocaleString()} tokens</strong> · <strong style="color:#ffd166">${((Date.now()-startRef.current)/1000).toFixed(1)}s</strong>${attempt>0 ? ` · <strong style="color:#ff6b9d">${attempt+1} attempts</strong>` : ''}<br><br>Switch to <strong>⬡ Preview</strong> to test it.<br><br><span style="color:#8b7cf8;font-size:11px">💬 Type feedback below to improve anything — I'm still here!</span>`)
       if(user) {
         const buildTimeStr = ((Date.now()-startRef.current)/1000).toFixed(1)
         const { data: newRow } = await supabase.from('apps').insert({
@@ -751,7 +817,7 @@ CRITICAL: For first-time empty states, show a friendly onboarding screen, NOT fa
       <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.csv" onChange={handleFileAttach} style={{display:'none'}}/>
 
       <nav style={c.nav}>
-        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v5.3</span></div>
+        <div style={c.logo}>JARVISFACTORY.AI <span style={{fontSize:9,background:'rgba(139,124,248,0.2)',color:'#8b7cf8',padding:'2px 6px',borderRadius:10,marginLeft:6}}>v6</span></div>
         <div style={{display:'flex',gap:10,alignItems:'center',position:'relative' as const}}>
           {currentAppId && finalPlan?.app_name && (
             <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:'#00e5b0',padding:'4px 8px',background:'rgba(0,229,176,0.08)',border:'1px solid rgba(0,229,176,0.2)',borderRadius:6,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>📂 {finalPlan.app_name}</span>
